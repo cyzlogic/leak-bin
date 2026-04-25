@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db/client.js";
+import { getTopRole, parseRoles, serializeRoles, sortUsersByHierarchy } from "../lib/roles.js";
 
 const router = Router();
 
@@ -44,7 +45,13 @@ router.post("/pastes", createLimiter, (req, res) => {
   }
 
   if (data.username && !existingUser) {
-    db.prepare("INSERT INTO users(username, tag, banned) VALUES (?, 'User', 0)").run(data.username);
+    const r = serializeRoles(["User"]);
+    const primary = "User";
+    db.prepare("INSERT INTO users(username, tag, roles, banned) VALUES (?, ?, ?, 0)").run(
+      data.username,
+      primary,
+      r,
+    );
   }
 
   const now = new Date();
@@ -74,7 +81,7 @@ router.post("/pastes", createLimiter, (req, res) => {
 router.get("/pastes/recent", (_req, res) => {
   const rows = db
     .prepare(
-      `SELECT p.id, p.title, p.created_at, u.username, u.tag
+      `SELECT p.id, p.title, p.created_at, u.username, u.tag, u.roles
        FROM pastes p
        LEFT JOIN users u ON u.username = p.author_username
        WHERE p.visibility = 'public'
@@ -82,7 +89,12 @@ router.get("/pastes/recent", (_req, res) => {
        LIMIT 12`,
     )
     .all();
-  return res.json({ pastes: rows });
+  return res.json({
+    pastes: rows.map((r) => ({
+      ...r,
+      roles: parseRoles(r.roles, r.tag),
+    })),
+  });
 });
 
 router.get("/pastes/:id", (req, res) => {
@@ -95,13 +107,16 @@ router.get("/pastes/:id", (req, res) => {
   }
 
   const user = row.author_username
-    ? db.prepare("SELECT username, tag FROM users WHERE username = ?").get(row.author_username)
+    ? db
+        .prepare("SELECT username, tag, roles FROM users WHERE username = ?")
+        .get(row.author_username)
     : null;
 
   if (row.burn_after_read) {
     db.prepare("DELETE FROM pastes WHERE id = ?").run(row.id);
   }
 
+  const roles = user ? parseRoles(user.roles, user.tag) : ["User"];
   return res.json({
     paste: {
       id: row.id,
@@ -110,16 +125,56 @@ router.get("/pastes/:id", (req, res) => {
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       username: user?.username,
-      tag: user?.tag || "User",
+      tag: roles[0] || "User",
+      roles,
     },
   });
 });
 
 router.get("/users", (_req, res) => {
-  const users = db
-    .prepare("SELECT username, tag, banned, created_at FROM users ORDER BY created_at DESC")
-    .all();
-  res.json({ users });
+  const rows = db.prepare("SELECT username, tag, roles, created_at FROM users").all();
+  const users = rows.map((u) => {
+    const roles = parseRoles(u.roles, u.tag);
+    return {
+      username: u.username,
+      tag: getTopRole(roles),
+      roles,
+      created_at: u.created_at,
+    };
+  });
+  res.json({ users: sortUsersByHierarchy(users) });
+});
+
+router.get("/users/:username", (req, res) => {
+  const row = db
+    .prepare("SELECT username, tag, roles, created_at FROM users WHERE username = ?")
+    .get(req.params.username);
+  if (!row) return res.status(404).json({ error: "User not found" });
+
+  const roles = parseRoles(row.roles, row.tag);
+  const totalPastes = db
+    .prepare("SELECT COUNT(*) AS count FROM pastes WHERE author_username = ?")
+    .get(row.username).count;
+  const recentPastes = db
+    .prepare(
+      `SELECT id, title, created_at
+       FROM pastes
+       WHERE author_username = ?
+       ORDER BY created_at DESC
+       LIMIT 20`,
+    )
+    .all(row.username);
+
+  res.json({
+    user: {
+      username: row.username,
+      roles,
+      topRole: getTopRole(roles),
+      createdAt: row.created_at,
+      totalPastes,
+      recentPastes,
+    },
+  });
 });
 
 router.get("/tos", (_req, res) => {

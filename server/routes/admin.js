@@ -1,23 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/client.js";
+import { parseRoles, sortUsersByHierarchy, validateRoleList } from "../lib/roles.js";
 
 const router = Router();
-const allowedTags = new Set(["Known", "Vip", "Admin", "Owner", "User", "known"]);
-const legacyTagMap = {
-  user: "User",
-  USER: "User",
-  admin: "Admin",
-  vip: "Vip",
-  owner: "Owner",
-  known_red: "known",
-};
-
-function normalizeTag(input) {
-  const cleaned = String(input || "").trim();
-  if (allowedTags.has(cleaned)) return cleaned;
-  return legacyTagMap[cleaned] || cleaned;
-}
 
 router.use((req, res, next) => {
   const key = req.header("x-admin-key");
@@ -52,29 +38,48 @@ router.post("/pastes/delete", (req, res) => {
 });
 
 router.post("/users", (_req, res) => {
-  const users = db.prepare("SELECT username, tag, banned FROM users ORDER BY username ASC").all();
-  res.json({ users });
+  const rows = db
+    .prepare("SELECT username, tag, roles FROM users")
+    .all();
+  const users = rows.map((u) => ({
+    username: u.username,
+    roles: parseRoles(u.roles, u.tag),
+  }));
+  res.json({
+    users: sortUsersByHierarchy(users),
+  });
 });
 
 router.post("/users/update", (req, res) => {
   const schema = z.object({
     username: z.string().min(2).max(24),
-    tag: z.string().min(2).max(24),
-    banned: z.boolean(),
+    roles: z.array(z.string().min(1).max(24)).min(1).max(32),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid payload" });
-  const normalizedTag = normalizeTag(parsed.data.tag);
-  if (!allowedTags.has(normalizedTag)) {
-    return res.status(400).json({ error: "Tag not allowed" });
+  const v = validateRoleList(parsed.data.roles);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const primary = JSON.parse(v.json)[0];
+  const result = db
+    .prepare("UPDATE users SET tag = ?, roles = ? WHERE username = ?")
+    .run(primary, v.json, parsed.data.username);
+  if (!result.changes) {
+    return res.status(404).json({ error: "User not found" });
   }
+  res.json({ ok: true, roles: JSON.parse(v.json) });
+});
 
-  db.prepare("UPDATE users SET tag = ?, banned = ? WHERE username = ?").run(
-    normalizedTag,
-    parsed.data.banned ? 1 : 0,
-    parsed.data.username,
-  );
-  res.json({ ok: true, tag: normalizedTag });
+router.post("/users/remove", (req, res) => {
+  const schema = z.object({ username: z.string().min(2).max(24) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid payload" });
+  const { username } = parsed.data;
+  db.prepare("DELETE FROM pastes WHERE author_username = ?").run(username);
+  const result = db.prepare("DELETE FROM users WHERE username = ?").run(username);
+  if (!result.changes) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  res.json({ ok: true, message: "User and their pastes removed" });
 });
 
 router.post("/tos", (req, res) => {

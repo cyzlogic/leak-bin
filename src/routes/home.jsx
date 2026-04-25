@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { apiGet } from "../lib/api";
-import TagBadge from "../components/TagBadge";
+import { TagList } from "../components/TagBadge";
 
 export default function HomePage() {
   const [recent, setRecent] = useState([]);
@@ -46,8 +46,18 @@ export default function HomePage() {
                 {paste.title || paste.id}
               </Link>
               <div className="flex items-center gap-2">
-                <span>{paste.username || "anonymous"}</span>
-                <TagBadge tag={paste.tag || "User"} />
+                {paste.username ? (
+                  <Link
+                    to="/users/$username"
+                    params={{ username: paste.username }}
+                    className="text-cyan-300 transition hover:text-cyan-200"
+                  >
+                    {paste.username}
+                  </Link>
+                ) : (
+                  <span>anonymous</span>
+                )}
+                <TagList tags={paste.roles} />
               </div>
             </div>
           ))}

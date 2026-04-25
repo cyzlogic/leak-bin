@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { apiGet } from "../lib/api";
-import TagBadge from "../components/TagBadge";
+import { TagList } from "../components/TagBadge";
 
 export default function UsersPage() {
   const [users, setUsers] = useState([]);
@@ -15,10 +16,15 @@ export default function UsersPage() {
       <div className="space-y-2 text-sm">
         {users.map((user) => (
           <div key={user.username} className="flex items-center justify-between rounded border border-green-900 p-2">
-            <span>{user.username}</span>
+            <Link
+              to="/users/$username"
+              params={{ username: user.username }}
+              className="text-cyan-300 transition hover:text-cyan-200"
+            >
+              {user.username}
+            </Link>
             <div className="flex items-center gap-2">
-              {user.banned ? <span className="text-red-300">banned</span> : null}
-              <TagBadge tag={user.tag} />
+              <TagList tags={user.roles} />
             </div>
           </div>
         ))}

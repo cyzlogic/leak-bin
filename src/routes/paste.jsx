@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { useParams } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { apiGet } from "../lib/api";
-import TagBadge from "../components/TagBadge";
+import { TagList } from "../components/TagBadge";
 
 export default function PastePage() {
   const { pasteId } = useParams({ from: "/paste/$pasteId" });
@@ -25,8 +25,18 @@ export default function PastePage() {
         <div>
           <h1 className="text-xl text-cyan-300">{paste.title || paste.id}</h1>
           <div className="mt-1 flex items-center gap-2 text-xs text-green-300/80">
-            <span>{paste.username || "anonymous"}</span>
-            <TagBadge tag={paste.tag || "User"} />
+            {paste.username ? (
+              <Link
+                to="/users/$username"
+                params={{ username: paste.username }}
+                className="text-cyan-300 transition hover:text-cyan-200"
+              >
+                {paste.username}
+              </Link>
+            ) : (
+              <span>anonymous</span>
+            )}
+            <TagList tags={paste.roles} />
           </div>
         </div>
         <button

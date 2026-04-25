@@ -1,17 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { apiGet, apiPost } from "../lib/api";
-import TagBadge from "../components/TagBadge";
-
-const tags = ["Known", "Vip", "Admin", "Owner", "User", "known"];
-const normalizeTag = (value) => {
-  if (tags.includes(value)) return value;
-  const lowered = String(value || "").toLowerCase();
-  if (lowered === "user") return "User";
-  if (lowered === "admin") return "Admin";
-  if (lowered === "vip") return "Vip";
-  if (lowered === "owner") return "Owner";
-  return "User";
-};
+import { TagList } from "../components/TagBadge";
+import { SELECTABLE_ROLES } from "../../shared/roles.js";
 
 export default function AdminPage() {
   const [analytics, setAnalytics] = useState(null);
@@ -29,7 +20,7 @@ export default function AdminPage() {
       apiGet("/api/tos"),
     ]);
     setAnalytics(a.analytics);
-    setUsers((u.users || []).map((user) => ({ ...user, tag: normalizeTag(user.tag) })));
+    setUsers(u.users || []);
     setPastes(p.pastes);
     setTos(t.content);
   }, [adminKey]);
@@ -40,17 +31,44 @@ export default function AdminPage() {
     });
   }, [load]);
 
-  const updateUser = async (username, tag, banned) => {
+  const updateRoles = async (username, roles) => {
+    if (!Array.isArray(roles) || roles.length === 0) {
+      setFeedback("Keep at least one role");
+      return;
+    }
     try {
-      await apiPost(
-        "/api/admin/users/update",
-        { username, tag: normalizeTag(tag), banned: Boolean(banned) },
-        adminKey,
-      );
+      await apiPost("/api/admin/users/update", { username, roles }, adminKey);
       setFeedback(`Updated ${username}`);
       await load();
     } catch (error) {
       setFeedback(error.message || "Failed to update user");
+    }
+  };
+
+  const toggleRole = (username, role, currentRoles) => {
+    const set = new Set(currentRoles);
+    if (set.has(role)) {
+      if (set.size === 1) {
+        setFeedback("A user must keep at least one role");
+        return;
+      }
+      set.delete(role);
+    } else {
+      set.add(role);
+    }
+    void updateRoles(username, Array.from(set));
+  };
+
+  const removeUser = async (username) => {
+    if (!window.confirm(`Permanently remove ${username} and all of their pastes?`)) {
+      return;
+    }
+    try {
+      const result = await apiPost("/api/admin/users/remove", { username }, adminKey);
+      setFeedback(result.message || `Removed ${username}`);
+      await load();
+    } catch (error) {
+      setFeedback(error.message || "Failed to remove user");
     }
   };
 
@@ -83,27 +101,40 @@ export default function AdminPage() {
 
       <section className="rounded border border-green-900/70 bg-black/40 p-4">
         <h2 className="mb-3 text-cyan-300">Manage Users</h2>
-        <div className="space-y-2 text-sm">
+        <p className="mb-3 text-xs text-zinc-500">Toggle roles; removal deletes the user and every paste they authored.</p>
+        <div className="space-y-3 text-sm">
           {users.map((user) => (
-            <div key={user.username} className="flex flex-wrap items-center gap-2 rounded border border-green-900 p-2">
-              <span className="min-w-36">{user.username}</span>
-              <TagBadge tag={user.tag} />
-              <select
-                value={user.tag}
-                className="rounded border border-green-900 bg-black px-2 py-1"
-                onChange={(event) => updateUser(user.username, event.target.value, user.banned)}
+            <div
+              key={user.username}
+              className="flex flex-col gap-2 rounded border border-green-900 p-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3"
+            >
+              <Link
+                to="/users/$username"
+                params={{ username: user.username }}
+                className="min-w-36 font-medium text-cyan-300 transition hover:text-cyan-200"
               >
-                {tags.map((tag) => (
-                  <option key={tag} value={tag}>
-                    {tag}
-                  </option>
+                {user.username}
+              </Link>
+              <TagList tags={user.roles} />
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                {SELECTABLE_ROLES.map((role) => (
+                  <label key={role} className="inline-flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      className="accent-cyan-500"
+                      checked={user.roles?.includes(role)}
+                      onChange={() => toggleRole(user.username, role, user.roles || [])}
+                    />
+                    {role}
+                  </label>
                 ))}
-              </select>
+              </div>
               <button
-                className="rounded border border-red-600 px-2 py-1"
-                onClick={() => updateUser(user.username, user.tag, !user.banned)}
+                type="button"
+                className="rounded border border-red-600 px-2 py-1 text-left sm:ml-auto"
+                onClick={() => removeUser(user.username)}
               >
-                {user.banned ? "Unban" : "Ban"}
+                Remove user
               </button>
             </div>
           ))}

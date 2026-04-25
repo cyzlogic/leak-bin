@@ -6,6 +6,7 @@ import UsersPage from "./routes/users";
 import TosPage from "./routes/tos";
 import PastePage from "./routes/paste";
 import AdminPage from "./routes/admin";
+import UserProfilePage from "./routes/user-profile";
 
 const rootRoute = createRootRoute({
   component: Layout,
@@ -21,6 +22,12 @@ const usersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/users",
   component: UsersPage,
+});
+
+const userProfileRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/users/$username",
+  component: UserProfilePage,
 });
 
 const createRoutePage = createRoute({
@@ -51,6 +58,7 @@ export const routeTree = rootRoute.addChildren([
   homeRoute,
   createRoutePage,
   usersRoute,
+  userProfileRoute,
   tosRoute,
   pasteRoute,
   adminRoute,
