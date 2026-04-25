@@ -13,80 +13,125 @@ router.use((req, res, next) => {
   return next();
 });
 
-router.post("/analytics", (_req, res) => {
-  const pastes = db.prepare("SELECT COUNT(*) AS count FROM pastes").get().count;
-  const users = db.prepare("SELECT COUNT(*) AS count FROM users").get().count;
-  res.json({ analytics: { pastes, users } });
+// ---------------- ANALYTICS ----------------
+
+router.post("/analytics", async (_req, res) => {
+  const pastesRes = await db.query("SELECT COUNT(*) FROM pastes");
+  const usersRes = await db.query("SELECT COUNT(*) FROM users");
+
+  res.json({
+    analytics: {
+      pastes: Number(pastesRes.rows[0].count),
+      users: Number(usersRes.rows[0].count),
+    },
+  });
 });
 
-router.post("/pastes", (_req, res) => {
-  const pastes = db
-    .prepare("SELECT id, title, created_at, author_username FROM pastes ORDER BY created_at DESC")
-    .all();
-  res.json({ pastes });
+// ---------------- GET PASTES ----------------
+
+router.post("/pastes", async (_req, res) => {
+  const result = await db.query(
+    "SELECT id, title, created_at, author_username FROM pastes ORDER BY created_at DESC"
+  );
+  res.json({ pastes: result.rows });
 });
 
-router.post("/pastes/delete", (req, res) => {
+// ---------------- DELETE PASTE ----------------
+
+router.post("/pastes/delete", async (req, res) => {
   const schema = z.object({ id: z.string().min(3) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid id" });
-  const result = db.prepare("DELETE FROM pastes WHERE id = ?").run(parsed.data.id);
-  if (!result.changes) {
+
+  const result = await db.query("DELETE FROM pastes WHERE id = $1", [
+    parsed.data.id,
+  ]);
+
+  if (result.rowCount === 0) {
     return res.status(404).json({ error: "Paste not found" });
   }
+
   res.json({ ok: true, message: "Paste deleted" });
 });
 
-router.post("/users", (_req, res) => {
-  const rows = db
-    .prepare("SELECT username, tag, roles FROM users")
-    .all();
-  const users = rows.map((u) => ({
+// ---------------- USERS ----------------
+
+router.post("/users", async (_req, res) => {
+  const result = await db.query("SELECT username, tag, roles FROM users");
+
+  const users = result.rows.map((u) => ({
     username: u.username,
     roles: parseRoles(u.roles, u.tag),
   }));
+
   res.json({
     users: sortUsersByHierarchy(users),
   });
 });
 
-router.post("/users/update", (req, res) => {
+// ---------------- UPDATE USER ----------------
+
+router.post("/users/update", async (req, res) => {
   const schema = z.object({
     username: z.string().min(2).max(24),
     roles: z.array(z.string().min(1).max(24)).min(1).max(32),
   });
+
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid payload" });
+
   const v = validateRoleList(parsed.data.roles);
   if (!v.ok) return res.status(400).json({ error: v.error });
+
   const primary = JSON.parse(v.json)[0];
-  const result = db
-    .prepare("UPDATE users SET tag = ?, roles = ? WHERE username = ?")
-    .run(primary, v.json, parsed.data.username);
-  if (!result.changes) {
+
+  const result = await db.query(
+    "UPDATE users SET tag = $1, roles = $2 WHERE username = $3",
+    [primary, v.json, parsed.data.username]
+  );
+
+  if (result.rowCount === 0) {
     return res.status(404).json({ error: "User not found" });
   }
+
   res.json({ ok: true, roles: JSON.parse(v.json) });
 });
 
-router.post("/users/remove", (req, res) => {
+// ---------------- REMOVE USER ----------------
+
+router.post("/users/remove", async (req, res) => {
   const schema = z.object({ username: z.string().min(2).max(24) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid payload" });
+
   const { username } = parsed.data;
-  db.prepare("DELETE FROM pastes WHERE author_username = ?").run(username);
-  const result = db.prepare("DELETE FROM users WHERE username = ?").run(username);
-  if (!result.changes) {
+
+  await db.query("DELETE FROM pastes WHERE author_username = $1", [username]);
+
+  const result = await db.query("DELETE FROM users WHERE username = $1", [
+    username,
+  ]);
+
+  if (result.rowCount === 0) {
     return res.status(404).json({ error: "User not found" });
   }
+
   res.json({ ok: true, message: "User and their pastes removed" });
 });
 
-router.post("/tos", (req, res) => {
+// ---------------- UPDATE TOS ----------------
+
+router.post("/tos", async (req, res) => {
   const schema = z.object({ content: z.string().min(1).max(10000) });
   const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "Invalid TOS content" });
-  db.prepare("UPDATE settings SET value = ? WHERE key = 'tos_content'").run(parsed.data.content);
+  if (!parsed.success)
+    return res.status(400).json({ error: "Invalid TOS content" });
+
+  await db.query(
+    "UPDATE settings SET value = $1 WHERE key = 'tos_content'",
+    [parsed.data.content]
+  );
+
   res.json({ ok: true });
 });
 
