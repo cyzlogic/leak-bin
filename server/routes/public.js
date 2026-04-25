@@ -3,7 +3,12 @@ import { nanoid } from "nanoid";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db/client.js";
-import { getTopRole, parseRoles, serializeRoles, sortUsersByHierarchy } from "../lib/roles.js";
+import {
+  getTopRole,
+  parseRoles,
+  serializeRoles,
+  sortUsersByHierarchy
+} from "../lib/roles.js";
 
 const router = Router();
 
@@ -29,15 +34,20 @@ const durations = {
   "7d": 7 * 24 * 60 * 60 * 1000,
 };
 
-router.post("/pastes", createLimiter, (req, res) => {
+// ---------------- CREATE PASTE ----------------
+
+router.post("/pastes", createLimiter, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid payload" });
   }
 
   const data = parsed.data;
+
   const existingUser = data.username
-    ? db.prepare("SELECT * FROM users WHERE username = ?").get(data.username)
+    ? (await db.query("SELECT * FROM users WHERE username = $1", [
+        data.username
+      ])).rows[0]
     : null;
 
   if (existingUser?.banned) {
@@ -45,12 +55,9 @@ router.post("/pastes", createLimiter, (req, res) => {
   }
 
   if (data.username && !existingUser) {
-    const r = serializeRoles(["User"]);
-    const primary = "User";
-    db.prepare("INSERT INTO users(username, tag, roles, banned) VALUES (?, ?, ?, 0)").run(
-      data.username,
-      primary,
-      r,
+    await db.query(
+      "INSERT INTO users (username, tag, roles, banned) VALUES ($1, $2, $3, 0)",
+      [data.username, "User", serializeRoles(["User"])]
     );
   }
 
@@ -59,64 +66,79 @@ router.post("/pastes", createLimiter, (req, res) => {
     data.expiration === "never"
       ? null
       : new Date(now.getTime() + durations[data.expiration]).toISOString();
+
   const id = nanoid(9);
 
-  db.prepare(
-    `INSERT INTO pastes(id, title, content, created_at, expires_at, author_username, visibility, burn_after_read)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    data.title || null,
-    data.content,
-    now.toISOString(),
-    expiresAt,
-    data.username || null,
-    data.visibility,
-    data.burnAfterRead ? 1 : 0,
+  await db.query(
+    `INSERT INTO pastes
+     (id, title, content, created_at, expires_at, author_username, visibility, burn_after_read)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [
+      id,
+      data.title || null,
+      data.content,
+      now.toISOString(),
+      expiresAt,
+      data.username || null,
+      data.visibility,
+      data.burnAfterRead ? 1 : 0
+    ]
   );
 
   return res.json({ paste: { id } });
 });
 
-router.get("/pastes/recent", (_req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT p.id, p.title, p.created_at, u.username, u.tag, u.roles
-       FROM pastes p
-       LEFT JOIN users u ON u.username = p.author_username
-       WHERE p.visibility = 'public'
-       ORDER BY p.created_at DESC
-       LIMIT 12`,
-    )
-    .all();
+// ---------------- RECENT PASTES ----------------
+
+router.get("/pastes/recent", async (_req, res) => {
+  const result = await db.query(
+    `SELECT p.id, p.title, p.created_at, u.username, u.tag, u.roles
+     FROM pastes p
+     LEFT JOIN users u ON u.username = p.author_username
+     WHERE p.visibility = 'public'
+     ORDER BY p.created_at DESC
+     LIMIT 12`
+  );
+
   return res.json({
-    pastes: rows.map((r) => ({
+    pastes: result.rows.map((r) => ({
       ...r,
       roles: parseRoles(r.roles, r.tag),
     })),
   });
 });
 
-router.get("/pastes/:id", (req, res) => {
-  const row = db.prepare("SELECT * FROM pastes WHERE id = ?").get(req.params.id);
+// ---------------- GET PASTE ----------------
+
+router.get("/pastes/:id", async (req, res) => {
+  const result = await db.query(
+    "SELECT * FROM pastes WHERE id = $1",
+    [req.params.id]
+  );
+
+  const row = result.rows[0];
   if (!row) return res.status(404).json({ error: "Paste not found" });
 
   if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
-    db.prepare("DELETE FROM pastes WHERE id = ?").run(row.id);
+    await db.query("DELETE FROM pastes WHERE id = $1", [row.id]);
     return res.status(410).json({ error: "Paste has expired" });
   }
 
-  const user = row.author_username
-    ? db
-        .prepare("SELECT username, tag, roles FROM users WHERE username = ?")
-        .get(row.author_username)
-    : null;
+  const userRes = row.author_username
+    ? await db.query(
+        "SELECT username, tag, roles FROM users WHERE username = $1",
+        [row.author_username]
+      )
+    : { rows: [] };
+
+  const user = userRes.rows[0];
 
   if (row.burn_after_read) {
-    db.prepare("DELETE FROM pastes WHERE id = ?").run(row.id);
+    await db.query("DELETE FROM pastes WHERE id = $1", [row.id]);
   }
 
   const roles = user ? parseRoles(user.roles, user.tag) : ["User"];
+
   return res.json({
     paste: {
       id: row.id,
@@ -131,9 +153,14 @@ router.get("/pastes/:id", (req, res) => {
   });
 });
 
-router.get("/users", (_req, res) => {
-  const rows = db.prepare("SELECT username, tag, roles, created_at FROM users").all();
-  const users = rows.map((u) => {
+// ---------------- USERS ----------------
+
+router.get("/users", async (_req, res) => {
+  const result = await db.query(
+    "SELECT username, tag, roles, created_at FROM users"
+  );
+
+  const users = result.rows.map((u) => {
     const roles = parseRoles(u.roles, u.tag);
     return {
       username: u.username,
@@ -142,28 +169,36 @@ router.get("/users", (_req, res) => {
       created_at: u.created_at,
     };
   });
+
   res.json({ users: sortUsersByHierarchy(users) });
 });
 
-router.get("/users/:username", (req, res) => {
-  const row = db
-    .prepare("SELECT username, tag, roles, created_at FROM users WHERE username = ?")
-    .get(req.params.username);
+// ---------------- SINGLE USER ----------------
+
+router.get("/users/:username", async (req, res) => {
+  const userRes = await db.query(
+    "SELECT username, tag, roles, created_at FROM users WHERE username = $1",
+    [req.params.username]
+  );
+
+  const row = userRes.rows[0];
   if (!row) return res.status(404).json({ error: "User not found" });
 
   const roles = parseRoles(row.roles, row.tag);
-  const totalPastes = db
-    .prepare("SELECT COUNT(*) AS count FROM pastes WHERE author_username = ?")
-    .get(row.username).count;
-  const recentPastes = db
-    .prepare(
-      `SELECT id, title, created_at
-       FROM pastes
-       WHERE author_username = ?
-       ORDER BY created_at DESC
-       LIMIT 20`,
-    )
-    .all(row.username);
+
+  const countRes = await db.query(
+    "SELECT COUNT(*) FROM pastes WHERE author_username = $1",
+    [row.username]
+  );
+
+  const recentRes = await db.query(
+    `SELECT id, title, created_at
+     FROM pastes
+     WHERE author_username = $1
+     ORDER BY created_at DESC
+     LIMIT 20`,
+    [row.username]
+  );
 
   res.json({
     user: {
@@ -171,15 +206,20 @@ router.get("/users/:username", (req, res) => {
       roles,
       topRole: getTopRole(roles),
       createdAt: row.created_at,
-      totalPastes,
-      recentPastes,
+      totalPastes: Number(countRes.rows[0].count),
+      recentPastes: recentRes.rows,
     },
   });
 });
 
-router.get("/tos", (_req, res) => {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'tos_content'").get();
-  res.json({ content: row?.value || "" });
+// ---------------- TOS ----------------
+
+router.get("/tos", async (_req, res) => {
+  const result = await db.query(
+    "SELECT value FROM settings WHERE key = 'tos_content'"
+  );
+
+  res.json({ content: result.rows[0]?.value || "" });
 });
 
 export default router;
